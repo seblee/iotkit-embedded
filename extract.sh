@@ -19,7 +19,8 @@
 
 env_check()
 {
-    if [ "${OS}" = "Linux" ]; then
+    CHECK_OS=$(uname -r | grep 'ali')
+    if [ "${OS}" = "Linux" ] && [ "${CHECK_OS}" = "" ]; then
         export PATH=tools/prebuilt/ubuntu/bin:${PATH}
     fi
     gawk --help > /dev/null 2>&1
@@ -222,6 +223,9 @@ echo ""
 FUNC_NAME_LIST="$(echo ${FUNC_NAME_LIST}|tr ' ' '\n')\n"
 HEADER_FILE_LIST="$(echo ${HEADER_FILE_LIST}|tr ' ' '\n')\n"
 
+FUNC_NAME_LIST=""
+HEADER_FILE_LIST=""
+
 echo ""
 # Read xtrc_file_rules
 TOTAL_ITERATION=$(wc -l ${TEMP_FILE_RULS}|gawk '{ print $1 }')
@@ -337,13 +341,21 @@ do
     
     DATA_TYPE=$(echo "${FUNC_DEC}" | head -1 | gawk -F' ' '{if ($1~/^DLL/ || $1~/extern/) {if ($3~/*/) {print $2"*";} else {print $2;}} else {if ($2~/*/) {print $1"*";} else {print $1;}}}'# | sed s/[[:space:]]//g)
     # echo -e "\n${DATA_TYPE}"
+    # echo -e "\n${FUNC_DEC}"
 
+    FUNC_FILE=$(grep ${func} ./wrappers/os/ubuntu/* | gawk -F':' '{print $1}' | sed -n 's/.\/wrappers\///g;s/\//\\\//g;p' | sed -n '1,1p')
+    if [ "${FUNC_FILE}" = "" ];then
+        FUNC_FILE=$(grep ${func} ./wrappers/tls/* | gawk -F':' '{print $1}' | sed -n 's/.\/wrappers\///g;s/\//\\\//g;p' | sed -n '1,1p')
+    fi
+    # echo -e "\n${FUNC_FILE}"
+
+    sed -n '/WRAPPER_FUNC_REFERENCE:/{:a;N;/*\//!ba;p}' ${WRAPPER_DOC} | sed -n '1d;s/FUNC_NAME/'${func}'/g;s/FUNC_FILE/'${FUNC_FILE}'/g;p' >> ${WRAPPERS_DIR}/wrapper.c
     sed -n '/'${func}':/{:a;N;/*\//!ba;p}' ${WRAPPER_DOC} | sed -n '1d;p' >> ${WRAPPERS_DIR}/wrapper.c
 
     if [ "${DATA_TYPE}" = "void" ];then
-        echo "${FUNC_DEC}" | sed -n '/;/{s/;/\n{\n\treturn;\n}\n\n/g};p' >> ${WRAPPERS_DIR}/wrapper.c
+        echo "${FUNC_DEC}" | sed -n 's/^  *//1;/;/{s/;/\n{\n\treturn;\n}\n\n/g};p' >> ${WRAPPERS_DIR}/wrapper.c
     else
-        echo "${FUNC_DEC}" | sed -n '/;/{s/;/\n{\n\treturn ('${DATA_TYPE}')1;\n}\n\n/g};p' >> ${WRAPPERS_DIR}/wrapper.c
+        echo "${FUNC_DEC}" | sed -n 's/^  *//1;/;/{s/;/\n{\n\treturn ('${DATA_TYPE}')1;\n}\n\n/g};p' >> ${WRAPPERS_DIR}/wrapper.c
     fi
 done
 
