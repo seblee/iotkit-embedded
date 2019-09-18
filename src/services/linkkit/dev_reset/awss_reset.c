@@ -38,7 +38,9 @@ void awss_report_reset_reply(void *pcontext, void *pclient, void *mesg)
     log_debug("[RST]", "%s\r\n", __func__);
 
     awss_report_reset_suc = 1;
-    HAL_Kv_Set(AWSS_KV_RST, &rst, sizeof(rst), 0);
+    if (HAL_Kv_Set(AWSS_KV_RST, &rst, sizeof(rst), 0) != 0) {
+        iotx_state_event(ITE_STATE_DEV_BIND, STATE_SYS_DEPEND_KV_SET, AWSS_KV_RST);
+    }
 
     HAL_Timer_Stop(report_reset_timer);
     HAL_Timer_Delete(report_reset_timer);
@@ -64,10 +66,11 @@ void awss_report_reset_reply(void *pcontext, void *pclient, void *mesg)
 int awss_report_reset_to_cloud()
 {
     if (awss_report_reset_suc) {
-        return 0;
+        iotx_state_event(ITE_STATE_DEV_BIND, STATE_BIND_ALREADY_RESET, NULL);
+        return STATE_BIND_ALREADY_RESET;
     }
 
-    int ret = -1;
+    int ret;
     int final_len = 0;
     char *topic = NULL;
     char *packet = NULL;
@@ -88,6 +91,7 @@ int awss_report_reset_to_cloud()
 
         topic = (char *)AWSS_RESET_MALLOC(topic_len + 1);
         if (topic == NULL) {
+            ret = STATE_SYS_DEPEND_MALLOC;
             goto REPORT_RST_ERR;
         }
         memset(topic, 0, topic_len + 1);
@@ -97,6 +101,7 @@ int awss_report_reset_to_cloud()
         ret = IOT_MQTT_Subscribe(NULL, topic, IOTX_MQTT_QOS0,
                                  (iotx_mqtt_event_handle_func_fpt)awss_report_reset_reply, NULL);
         if (ret < 0) {
+            iotx_state_event(ITE_STATE_DEV_BIND, ret, topic);
             goto REPORT_RST_ERR;
         }
 
@@ -106,7 +111,7 @@ int awss_report_reset_to_cloud()
 
     packet = AWSS_RESET_MALLOC(packet_len + 1);
     if (packet == NULL) {
-        ret = -1;
+        ret = STATE_SYS_DEPEND_MALLOC;
         goto REPORT_RST_ERR;
     }
     memset(packet, 0, packet_len + 1);
@@ -121,7 +126,9 @@ int awss_report_reset_to_cloud()
 
     ret = IOT_MQTT_Publish_Simple(NULL, topic, IOTX_MQTT_QOS0, packet, final_len);
     log_debug("[RST]", "report reset result:%d\r\n", ret);
-
+    if (ret < 0) {
+        iotx_state_event(ITE_STATE_DEV_BIND, ret, topic);
+    }
 REPORT_RST_ERR:
     if (packet) {
         AWSS_RESET_FREE(packet);
@@ -135,11 +142,13 @@ REPORT_RST_ERR:
 int awss_report_reset()
 {
     char rst = 0x01;
-
+    int ret;
     awss_report_reset_suc = 0;
 
-    HAL_Kv_Set(AWSS_KV_RST, &rst, sizeof(rst), 0);
-
+    ret = HAL_Kv_Set(AWSS_KV_RST, &rst, sizeof(rst), 0);
+    if (ret < 0) {
+        iotx_state_event(ITE_STATE_DEV_BIND, STATE_SYS_DEPEND_KV_SET, AWSS_KV_RST);
+    }
     return awss_report_reset_to_cloud();
 }
 
@@ -148,8 +157,11 @@ int awss_check_reset()
     int len = 1;
     char rst = 0;
 
-    HAL_Kv_Get(AWSS_KV_RST, &rst, &len);
-
+    int ret = HAL_Kv_Get(AWSS_KV_RST, &rst, &len);
+    log_debug("[RST]", "need report rst\r\n");
+    if (ret < 0) {
+        iotx_state_event(ITE_STATE_DEV_BIND, STATE_SYS_DEPEND_KV_GET, AWSS_KV_RST);
+    }
     if (rst != 0x01) { // reset flag is not set
         log_debug("[RST]", "no rst\r\n");
         return 0;
@@ -159,6 +171,21 @@ int awss_check_reset()
 
     return 1;
 }
+
+int awss_stop_report_reset()
+{
+    if (report_reset_timer == NULL) {
+        iotx_state_event(ITE_STATE_DEV_BIND, STATE_BIND_ALREADY_RESET, NULL);
+        return STATE_BIND_ALREADY_RESET;
+    }
+
+    HAL_Timer_Stop(report_reset_timer);
+    HAL_Timer_Delete(report_reset_timer);
+    report_reset_timer = NULL;
+
+    return 0;
+}
+
 
 #if defined(__cplusplus)  /* If this is a C++ compiler, use C linkage */
 }

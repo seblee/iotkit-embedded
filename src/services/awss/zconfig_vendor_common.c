@@ -66,13 +66,7 @@ static const uint8_t aws_fixed_scanning_channels[] = {
     1, 6, 11, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13
 };
 
-static void *rescan_timer = NULL;
-
-static void rescan_monitor(void);
-
 #define RESCAN_MONITOR_TIMEOUT_MS     (5 * 60 * 1000)
-static uint8_t rescan_available = 0;
-
 /*
  * sniffer result/storage
  * use global variable/buffer to keep it usable after zconfig_destroy
@@ -80,9 +74,11 @@ static uint8_t rescan_available = 0;
 uint8_t aws_result_ssid[ZC_MAX_SSID_LEN + 1];
 uint8_t aws_result_passwd[ZC_MAX_PASSWD_LEN + 1];
 uint8_t aws_result_bssid[ETH_ALEN];/* mac addr */
+uint8_t aws_result_token[ZC_MAX_TOKEN_LEN];/* bind token */
 uint8_t aws_result_channel = 0;
 uint8_t aws_result_encry;
 uint8_t aws_result_auth;
+int aws_80211_frame_handler(char *, int, enum AWSS_LINK_TYPE, int, signed char);
 
 uint8_t zconfig_get_lock_chn(void)
 {
@@ -109,7 +105,7 @@ void zconfig_channel_locked_callback(uint8_t primary_channel,
 }
 
 void zconfig_got_ssid_passwd_callback(uint8_t *ssid, uint8_t *passwd,
-                                      uint8_t *bssid, uint8_t auth, uint8_t encry, uint8_t channel)
+                                      uint8_t *bssid, uint8_t *token, uint8_t auth, uint8_t encry, uint8_t channel)
 {
     if (bssid) {
         awss_debug("ssid:%s, bssid:%02x%02x%02x%02x%02x%02x, %s, %s, %d\r\n",
@@ -125,6 +121,9 @@ void zconfig_got_ssid_passwd_callback(uint8_t *ssid, uint8_t *passwd,
                    channel);
     }
 
+    if (token) {
+        memcpy(aws_result_token, token, ZC_MAX_TOKEN_LEN);
+    }
     memset(aws_result_ssid, 0, sizeof(aws_result_ssid));
     memset(aws_result_passwd, 0, sizeof(aws_result_passwd));
     strncpy((char *)aws_result_ssid, (const char *)ssid, ZC_MAX_SSID_LEN - 1);
@@ -270,6 +269,20 @@ int zconfig_add_active_channel(int channel)
     return 0;
 }
 
+/* sleep for RESCAN_MONITOR_TIMEOUT_MS if no one interrupts */
+void zconfig_sleep_before_rescan()
+{
+    int iter = 0;
+    int count = RESCAN_MONITOR_TIMEOUT_MS / 200;
+    for (iter = 0; iter < count; iter++) {
+        if (awss_get_config_press() ||
+            aws_stop == AWS_STOPPING) {  /* user interrupt sleep */
+            break;
+        }
+        HAL_SleepMs(200);
+    }
+}
+
 /*
  * platform like mc300, 雄迈 depend on auth & encry type
  * so keep scanning if auth & encry is incomplete
@@ -339,6 +352,10 @@ rescanning:
                 break;
         }
 
+        if (aws_stop == AWS_STOPPING) { /* interrupt by user */
+            goto timeout_scanning;
+        }
+
         if (aws_state != AWS_SCANNING) {
             break;
         }
@@ -379,6 +396,11 @@ rescanning:
     while (aws_state != AWS_SUCCESS) {
         /* 80211 frame handled by callback */
         os_msleep(300);
+
+        if (aws_stop == AWS_STOPPING) {
+            goto timeout_recving;
+        }
+
 #ifdef AWSS_SUPPORT_APLIST
         aws_try_adjust_chan();
 #endif
@@ -388,6 +410,11 @@ rescanning:
 
         if (aws_state == AWS_SCANNING) {
             awss_debug("channel rescanning...\n");
+            if (zconfig_data != NULL) {
+                void *temp_mutex = zc_mutex;
+                memset(zconfig_data, 0, sizeof(struct zconfig_data));
+                zc_mutex = temp_mutex;
+            }
             goto rescanning;
         }
     }
@@ -401,20 +428,20 @@ timeout_scanning:
     awss_debug("aws timeout scanning!\r\n");
 timeout_recving:
     awss_debug("aws timeout recving!\r\n");
-    if (rescan_timer == NULL) {
-        rescan_timer = HAL_Timer_Create("rescan", (void(*)(void *))rescan_monitor, NULL);
-    }
-    HAL_Timer_Stop(rescan_timer);
-    HAL_Timer_Start(rescan_timer, RESCAN_MONITOR_TIMEOUT_MS);
-    while (rescan_available == 0) {
-        if (awss_get_config_press()) {  // user interrupt sleep
-            HAL_Timer_Stop(rescan_timer);
+
+    do {
+        if (aws_stop == AWS_STOPPING) {
             break;
         }
-        os_msleep(200);
+        zconfig_sleep_before_rescan();
+
+    } while (0);
+
+    if (aws_stop == AWS_STOPPING) {  /* interrupt by user */
+        aws_stop = AWS_STOPPED;
+        goto success;
     }
-    rescan_available = 0;
-    aws_stop = AWS_SCANNING;
+
     aws_state = AWS_SCANNING;
 #ifdef AWSS_SUPPORT_APLIST
     if (awss_is_ready_clr_aplist()) {
@@ -426,11 +453,10 @@ timeout_recving:
     goto rescanning;
 
 success:
-    awss_stop_timer(rescan_timer);
-    rescan_timer = NULL;
     // don't destroy zconfig_data until monitor_cb is finished.
     os_mutex_lock(zc_mutex);
     os_mutex_unlock(zc_mutex);
+    awss_trace("ready to call zconfig_destroy to release mem\n");
     /*
      * zconfig_destroy() after os_awss_monitor_close() beacause
      * zconfig_destroy will release mem/buffer that
@@ -439,6 +465,12 @@ success:
      * Note: hiflying will reboot after calling this func, so
      *    aws_get_ssid_passwd() was called in os_awss_monitor_close()
      */
+    if (aws_stop == AWS_STOPPED) {
+        zconfig_force_destroy();
+        awss_trace("zconfig mem released\n");
+    }
+
+
 #if defined(AWSS_SUPPORT_ADHA) || defined(AWSS_SUPPORT_AHA)
     if (strcmp((const char *)aws_result_ssid, (const char *)zc_adha_ssid) == 0 ||
         strcmp((const char *)aws_result_ssid, (const char *)zc_default_ssid) == 0) {
@@ -448,11 +480,6 @@ success:
     {
         zconfig_force_destroy();
     }
-}
-
-static void rescan_monitor(void)
-{
-    rescan_available = 1;
 }
 
 int aws_80211_frame_handler(char *buf, int length, enum AWSS_LINK_TYPE link_type, int with_fcs, signed char rssi)
@@ -466,6 +493,7 @@ int aws_80211_frame_handler(char *buf, int length, enum AWSS_LINK_TYPE link_type
             case PKG_START_FRAME:
             case PKG_DATA_FRAME:
             case PKG_GROUP_FRAME:
+            case PKG_MCAST_FRAME:
                 lock_start = os_get_time_ms();
                 break;
             default:
@@ -515,16 +543,35 @@ void aws_start(char *pk, char *dn, char *ds, char *ps)
     aws_main_thread_func();
 }
 
+static void *aws_mutex = NULL;
+
 void aws_destroy(void)
 {
-    HAL_Awss_Close_Monitor();
+    if (aws_mutex == NULL) {
+        aws_mutex = HAL_MutexCreate();
+    }
+    if (aws_mutex) {
+        HAL_MutexLock(aws_mutex);
+    }
+
     if (aws_info == NULL) {
+        HAL_MutexUnlock(aws_mutex);
         return;
     }
 
+    if (aws_stop == AWS_STOPPED) {
+        HAL_MutexUnlock(aws_mutex);
+        return;
+    }
+
+    HAL_Awss_Close_Monitor();
+    awss_trace("aws_destroy\r\n");
     aws_stop = AWS_STOPPING;
-    while (aws_state != AWS_SUCCESS && aws_state != AWS_TIMEOUT) {
-        os_msleep(100);
+    while (aws_stop != AWS_STOPPED) {
+        if (aws_state == AWS_SUCCESS) {
+            break;
+        }
+        HAL_SleepMs(100);
     }
 
     os_free(aws_info);
@@ -532,9 +579,21 @@ void aws_destroy(void)
 #ifndef AWSS_DISABLE_ENROLLEE
     awss_destroy_enrollee_info();
 #endif
+
+    if (aws_mutex) {
+        HAL_MutexUnlock(aws_mutex);
+    }
 }
 
-int aws_get_ssid_passwd(char *ssid, char *passwd, uint8_t *bssid,
+void aws_release_mutex()
+{
+    if (aws_mutex) {
+        HAL_MutexDestroy(aws_mutex);
+        aws_mutex = NULL;
+    }
+}
+
+int aws_get_ssid_passwd(char *ssid, char *passwd, uint8_t *bssid, uint8_t *token,
                         char *auth, char *encry, uint8_t *channel)
 {
     if (aws_state != AWS_SUCCESS) {
@@ -549,6 +608,9 @@ int aws_get_ssid_passwd(char *ssid, char *passwd, uint8_t *bssid,
     if (bssid) {
         memcpy(bssid, aws_result_bssid, ETH_ALEN);
     }
+    if (token) {
+        memcpy(token, aws_result_token, ZC_MAX_TOKEN_LEN);
+    }
     if (auth) {
         *auth = aws_result_auth;
     }
@@ -560,6 +622,26 @@ int aws_get_ssid_passwd(char *ssid, char *passwd, uint8_t *bssid,
     }
     return 1;
 }
+
+#if defined(AWSS_SUPPORT_SMARTCONFIG_MCAST) || defined(AWSS_SUPPORT_SMARTCONFIG)
+const uint8_t zconfig_fixed_offset[ZC_ENC_TYPE_MAX + 1][2] = {
+    {  /* open, none, ip(20) + udp(8) + 8(LLC) */
+        36, 36
+    },
+    {  /* wep, + iv(4) + data + ICV(4) */
+        44, 44  /* feixun, wep64(10byte), wep128(26byte) */
+    },
+    {  /* tkip, + iv/keyID(4) + Ext IV(4) + data + MIC(8) + ICV(4) */
+        56, 56  /* tkip(10byte, 20byte), wpa2+tkip(20byte) */
+    },
+    {  /* aes, + ccmp header(8) + data + MIC(8) + ICV(4) */
+        52, 52
+    },
+    {  /* tkip-aes */
+        56, 52  /* fromDs==tkip,toDs==aes */
+    }
+};
+#endif
 
 #if defined(__cplusplus)  /* If this is a C++ compiler, use C linkage */
 }

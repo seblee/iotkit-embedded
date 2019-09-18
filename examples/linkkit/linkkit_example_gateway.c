@@ -445,11 +445,14 @@ int linkkit_main(void *paras)
     IOT_Ioctl(IOTX_IOCTL_RECV_EVENT_REPLY, (void *)&post_event_reply);
 
     /* Start Connect Aliyun Server */
-    res = IOT_Linkkit_Connect(user_example_ctx->master_devid);
-    if (res < 0) {
-        EXAMPLE_TRACE("IOT_Linkkit_Connect Failed\n");
-        return -1;
-    }
+    do {
+        res = IOT_Linkkit_Connect(user_example_ctx->master_devid);
+        if (res < 0) {
+            EXAMPLE_TRACE("IOT_Linkkit_Connect failed, retry after 5s...\n");
+            HAL_SleepMs(5000);
+        }
+    } while (res < 0);
+
 
     user_example_ctx->g_user_dispatch_thread_running = 1;
     res = HAL_ThreadCreate(&user_example_ctx->g_user_dispatch_thread, user_dispatch_yield, NULL, NULL, NULL);
@@ -506,7 +509,12 @@ int linkkit_main(void *paras)
     }
 
     user_example_ctx->g_user_dispatch_thread_running = 0;
-    IOT_Linkkit_Close(user_example_ctx->master_devid);
+    
+    do {
+        HAL_SleepMs(1000);
+        res = IOT_Linkkit_Close(user_example_ctx->master_devid);
+    }while(res < 0);
+
     HAL_ThreadDelete(user_example_ctx->g_user_dispatch_thread);
 
     IOT_DumpMemoryStats(IOT_LOG_DEBUG);
