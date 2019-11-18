@@ -208,9 +208,9 @@ HDER_PAT="$(echo ${HEADER_FILE_LIST}|sed 's: :\\\|:g')"
 # [ "${FUNC_PAT}" != "" ] && sed -i "/${FUNC_PAT}/d" ${TEMP_WRAPPER_RULS}
 # [ "${HDER_PAT}" != "" ] && sed -i "/${HDER_PAT}/d" ${TEMP_WRAPPER_RULS}
 
-if [ "${FUNC_PAT}" != "" ] && [ "${HDER_PAT}" != "" ]; then
-    sed -i "/${FUNC_PAT}/{/${HDER_PAT}/d}" ${TEMP_WRAPPER_RULS}
-fi
+#if [ "${FUNC_PAT}" != "" ] && [ "${HDER_PAT}" != "" ]; then
+#    sed -i "/${FUNC_PAT}/{/${HDER_PAT}/d}" ${TEMP_WRAPPER_RULS}
+#fi
 
 printf "Interpret [%03d] sources rules" $(cat ${TEMP_FILE_RULS}|wc -l|sed 's/[[:space:]]//g')
 printf " from [%03d] base\n" $(cat ${XTRC_FILE_RULS}|wc -l|sed 's/[[:space:]]//g')
@@ -336,7 +336,7 @@ do
         continue
     fi
 
-    FUNC_DEC=$(${FIND} ./${OUTPUT_DIR}/eng -name *wrapper.h | xargs -i cat {})
+    FUNC_DEC=$(${FIND} ./src -name *wrapper.h | xargs -i cat {})
     FUNC_DEC=$(echo "${FUNC_DEC}" | sed -n '/.*'${func}'(.*/{/.*);/ba;{:c;N;/.*);/!bc};:a;p;q}')
     
     DATA_TYPE=$(echo "${FUNC_DEC}" | head -1 | gawk -F' ' '{if ($1~/^DLL/ || $1~/extern/) {if ($3~/*/) {print $2"*";} else {print $2;}} else {if ($2~/*/) {print $1"*";} else {print $1;}}}'# | sed s/[[:space:]]//g)

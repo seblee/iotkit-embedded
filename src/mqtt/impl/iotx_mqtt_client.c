@@ -210,14 +210,6 @@ static int iotx_mc_init(iotx_mc_client_t *pClient, iotx_mqtt_param_t *pInitParam
     iotx_time_init(&pClient->reconnect_param.reconnect_next_time);
 
     memset(&pClient->ipstack, 0, sizeof(utils_network_t));
-
-#ifdef SUPPORT_TLS
-    {
-        extern const char *iotx_ca_crt;
-        pInitParams->pub_key = iotx_ca_crt;
-    }
-#endif
-
     rc = iotx_net_init(&pClient->ipstack, pInitParams->host, pInitParams->port, pInitParams->pub_key);
 
     if (SUCCESS_RETURN != rc) {
@@ -773,7 +765,10 @@ static int _mqtt_connect(void *client)
         return NULL_VALUE_ERROR;
     }
     userKeepAliveInterval = pClient->connect_data.keepAliveInterval;
-    pClient->connect_data.keepAliveInterval = CONFIG_MQTT_KEEPALIVE_INTERVAL_MAX;
+    pClient->connect_data.keepAliveInterval = (userKeepAliveInterval * 2);
+    if(pClient->connect_data.keepAliveInterval > CONFIG_MQTT_KEEPALIVE_INTERVAL_MAX) {
+        pClient->connect_data.keepAliveInterval = CONFIG_MQTT_KEEPALIVE_INTERVAL_MAX;
+    }
     mqtt_info("connect params: MQTTVersion=%d, clientID=%s, keepAliveInterval=%d, username=%s",
               pClient->connect_data.MQTTVersion,
               pClient->connect_data.clientID.cstring,
